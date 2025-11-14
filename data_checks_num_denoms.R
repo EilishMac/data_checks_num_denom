@@ -1,14 +1,30 @@
+
+###############################################################################.
+## Data Checks - Apr-23
+## Author: Eilish Mackinnon
+## Date written: Nov 2025
+
+## Description:
+# This script identifies any obvious errors in CAIR data.
+# The first check checks for data where num>denom
+
+
 #############################################
 # 1. Install and load libraries
 #############################################
-required_packages <- c("dplyr", "readr", "janitor", "stringr", "tidyr", "writexl")
-installed <- rownames(installed.packages())
-for (pkg in required_packages) {
-  if (!(pkg %in% installed)) install.packages(pkg)
-}
-lapply(required_packages, library, character.only = TRUE)
+install.packages("dplyr")
+install.packages("readr")
+install.packages("janitor")
+install.packages("stringr")
+install.packages("tidyr")
+install.packages("writexl")
+library("dplyr")
+library("readr")
+library("janitor")
+library("stringr")
+library("tidyr")
+library("writexl")
 
-#############################################
 # 2. Set working directory
 #############################################
 setwd("/conf/EIC/Data Submission")  # ✅ Change if needed
@@ -21,7 +37,7 @@ raw_data <- read_delim(
   delim = "\t",
   locale = locale(encoding = "UTF-16"),
   trim_ws = TRUE
-) |>
+) %>%
   clean_names()
 
 #############################################
@@ -33,30 +49,42 @@ dir.create(output_dir, showWarnings = FALSE)
 dir.create(special_dir, showWarnings = FALSE)
 
 #############################################
-# 5. Define Group 1 measures
+# 5. Measures to be included (2 data fields only)
 #############################################
-group1_measures <- c("AEW", "EWF", "FF1", "FFN2", "FNN3", "PLE1", "DPO1", "DPP1", "MEWC",
-                     "MEWE", "NN1", "WMYT1", "SDU1", "PPA", "PPD", "MHCP", "HVIA", "QIQ", "LDECP1")
+meas <- c("AEW", "EWF", "FF1", "FFN2", "FNN3", "PLE1", "DPO1", "DPP1", "MEWC",
+          "MEWE", "NN1", "SDU1", "PPA", "PPD", "MHCP", "HVIA")
 
 #############################################
 # 6. Split data
 #############################################
-group1_data <- raw_data %>% filter(measure_id %in% group1_measures)
-group_other_data <- raw_data %>% filter(!measure_id %in% group1_measures)
+meas_data <- raw_data %>% filter(measure_id %in% meas)
+group_other_data <- raw_data %>% filter(!measure_id %in% meas)
 
 #############################################
-# 7. Apply rule for special cases
+# 7. Add columns: calculate rate & flag outliers
 #############################################
-special_rows <- group1_data %>%
-  filter(as.numeric(user_data_1) > as.numeric(user_data_2))
+meas_data <- meas_data %>%
+  mutate(
+    user_data_1 = as.numeric(user_data_1),
+    user_data_2 = as.numeric(user_data_2),
+    rate_pct = ifelse(!is.na(user_data_1) & !is.na(user_data_2) & user_data_2 != 0,
+                      (user_data_1 / user_data_2) * 100,
+                      NA),
+    outlier_flag = ifelse(rate_pct > 100, "High", "Normal")
+  ) %>%
+  select(health_board_code_9_curr, health_board_name, location_code, sub_location_code,
+         measure_date, measure_id, user_data_1, user_data_2, rate_pct, outlier_flag)
 
 #############################################
-# 8. Filter IFR, PUR, OBD and pivot wider
+# 8. Apply rule for special cases (num > denom)
 #############################################
-filter_group_other_data <- group_other_data %>%
-  filter(measure_id %in% c("IFR", "PUR", "OBD"))
+special_rows <- meas_data %>% filter(user_data_1 > user_data_2)
 
-pivoted_data <- filter_group_other_data %>%
+#############################################
+# 9. Process IFR, PUR, OBD measures
+#############################################
+pivoted_data <- group_other_data %>%
+  filter(measure_id %in% c("IFR", "PUR", "OBD")) %>%
   select(health_board_code_9_curr, health_board_name, location_code, sub_location_code,
          measure_date, measure_id, user_data_1) %>%
   pivot_wider(names_from = measure_id, values_from = user_data_1) %>%
@@ -66,43 +94,43 @@ pivoted_data <- filter_group_other_data %>%
     OBD = as.numeric(OBD)
   )
 
-#############################################
-# 9. Calculate ratios
-#############################################
-#############################################
-# 9. Create numerator and denominator columns
-#############################################
+# IFR section
 ifr_data <- pivoted_data %>%
   filter(!is.na(IFR) & !is.na(OBD)) %>%
   mutate(
     IFR_num = IFR,
-    IFR_den = OBD
+    IFR_den = OBD,
+    rate = (IFR_num / IFR_den) * 1000   # IFR rate per 1000
   ) %>%
   select(health_board_code_9_curr, health_board_name, location_code, sub_location_code,
-         measure_date, IFR_num, IFR_den)
+         measure_date, IFR_num, IFR_den, rate)
 
+# PUR section
 pur_data <- pivoted_data %>%
   filter(!is.na(PUR) & !is.na(OBD)) %>%
   mutate(
     PUR_num = PUR,
-    PUR_den = OBD
+    PUR_den = OBD,
+    rate = (PUR_num / PUR_den) * 1000   # PUR rate per 1000
   ) %>%
   select(health_board_code_9_curr, health_board_name, location_code, sub_location_code,
-         measure_date, PUR_num, PUR_den)
+         measure_date, PUR_num, PUR_den, rate)
+
 #############################################
 # 10. Save outputs
 #############################################
-write_csv(group1_data, file.path(output_dir, "group1.csv"))
+write_csv(meas_data, file.path(output_dir, "group1.csv"))
 write_csv(group_other_data, file.path(output_dir, "other.csv"))
 
 if (nrow(special_rows) > 0) {
   write_csv(special_rows, file.path(special_dir, "special_group1.csv"))
 }
 
-# Save IFR and PUR numerator/denominator in one Excel workbook
 excel_file <- file.path(output_dir, "IFR_PUR_values.xlsx")
 write_xlsx(list(
   IFR_values = ifr_data,
   PUR_values = pur_data
 ), path = excel_file)
+
+###################End##########################
 
